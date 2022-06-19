@@ -13,22 +13,17 @@ from itertools import combinations
 
 class Detector:
     def __init__(self):
-        self.intersection = []
-
-    def detect(self, img, ksize, t1, t2):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (ksize, ksize), 0)
-        canny = cv2.Canny(blur, threshold1=t1, threshold2=t2)
-        # plt.imshow(canny)
-        return canny
+        self.intersection = np.empty(shape=(2))
 
     def preprocessing(self, image, ksize, t1, t2):
         # Preprocessing and Canny edge detection
-        edge = self.detect(image, ksize, t1, t2)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (ksize, ksize), 0)
+        canny = cv2.Canny(blur, threshold1=t1, threshold2=t2)
 
         # Process edge image
         kernel = np.ones((15,15),np.uint8)
-        edge = cv2.dilate(edge, kernel, iterations=1)
+        edge = cv2.dilate(canny, kernel, iterations=1)
 
         # edge = self.continuousPixel(self.pixelValue(edge),20)
         # edge = self.continuousPixel(self.pixelValue(edge),20)
@@ -49,12 +44,12 @@ class Detector:
 
         return lines
 
-    def plotLine(self, slope, yIntercept, width, height):
-        # Plot edges
+    def findIntersection(self, slope, yIntercept, width, height, showPlot):
         x = np.arange(width)
         Y = np.empty(shape=(len(slope), width))
         f = np.empty(width)
 
+        # Find the equation f for each line and save it to Y
         for i in range(len(slope)):
             for j in range(width):
                 f[j] = slope[i]*j + yIntercept[i]
@@ -69,15 +64,17 @@ class Detector:
         yInter = 0
         for i, j in comb:
             idx = np.argwhere(np.diff(np.sign(Y[i] - Y[j]))).flatten()
-            xInter += idx
-            yInter += Y[i][idx]
-            interpoint.append(idx)
-            # plt.plot(x[idx], Y[i][idx], 'ro')
+            if len(idx) == 0:
+                continue
+            for k in idx:
+                xInter += k
+                yInter += Y[i][k]
         xInter = xInter/(len(Y))
         yInter = yInter/(len(Y))
 
         # Save intersection to private variable intersection
-        self.intersection = [xInter, yInter]
+        self.intersection[0] = xInter
+        self.intersection[1] = yInter
 
         # Plot intersections
         plt.plot(self.intersection[0], self.intersection[1], 'ro', markersize=3)
@@ -86,7 +83,8 @@ class Detector:
         plt.ylim(0, height)
         plt.gca().invert_yaxis()
 
-        plt.show()
+        if showPlot:
+            plt.show()
 
     def filterLines(self, linesList, thresholdOverlap, thresholdSlope, thresholdYIntercept, width, height, showPlot):
         # Remove overlapping lines
@@ -118,6 +116,7 @@ class Detector:
                 elif abs(slope[i] - slope[j]) < thresholdSlope and abs(yIntercept[i] - yIntercept[j]) < thresholdYIntercept:
                     index.append(j)
         
+        # Remove duplicates
         temp = []
         for i in index:
             if i not in temp:
@@ -131,6 +130,7 @@ class Detector:
         for i in index:
             newIndex.remove(i)
 
+        # Final filter lists
         newLinesList = []
         newSlope = []
         newYIntercept = []
@@ -139,62 +139,115 @@ class Detector:
             newSlope.append(slope[i])
             newYIntercept.append(yIntercept[i])
 
-        if showPlot:
-            # print("Slope: " + str(slope))
-            # print("Y-intercept: " + str(yIntercept))
-            self.plotLine(newSlope, newYIntercept, width, height)
+        self.findIntersection(newSlope, newYIntercept, width, height, showPlot)
 
         return newLinesList
 
-    def isCenter(self, intersection, height, width, threshold):
+    def isCenter(self, height, width, threshold):
+        if len(self.intersection) == 0:
+            return
+
         # Intersection at center
-        if abs(intersection[0] - width/2) < threshold and abs(intersection[1] - height/2) < threshold:
+        if abs(self.intersection[0] - width/2) < threshold and abs(self.intersection[1] - height/2) < threshold:
             return 0
         # Intersection at left top corner
-        elif intersection[0] < width/2 and intersection[1] < height/2:
+        elif self.intersection[0] < width/2 and self.intersection[1] < height/2:
             return 1
         # Intersection at left bottom corner
-        elif intersection[0] < width/2:
+        elif self.intersection[0] < width/2:
             return 2
         # Intersection at right top corner
-        elif intersection[0] > width/2 and intersection[1] < height/2:
+        elif self.intersection[0] > width/2 and self.intersection[1] < height/2:
             return 3
         # Intersection at right bottom corner
-        elif intersection[0] > width/2:
+        elif self.intersection[0] > width/2:
             return 4
         # Error
         else:
             return -1
 
-    def detectImage(self, lines, height, width):
-        image = np.zeros(shape=(height, width, 3))
+    def showLines(self, lines, height, width, image):
+        # Create linesList
         linesList = []
+        for points in lines:
+            x1,y1,x2,y2=points[0]
+            linesList.append([x1,y1,x2,y2])
 
-        if lines is None:
-            print("No lines detected")
+        # Filter lines
+        linesList = self.filterLines(linesList, 600, 0.1, 0, width, height, False)
+        linesList = self.filterLines(linesList, 600, 0.1, 0, width, height, False)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text1 = "Center found"
+        text2 = "Please move the corner to the center of the image"
+        text1size = cv2.getTextSize(text1, font, 1, 2)[0] 
+        text2size = cv2.getTextSize(text2, font, 1, 2)[0]
+        text1X = int((width - text1size[0]) / 2)
+        text2X = int((width - text2size[0]) / 2)
+
+        move = self.isCenter(height, width, 100)
+        if move == 0:
+            cv2.putText(image, text1, (text1X, 40), font, 1, (255, 255, 255), 2)
         else:
-            # Create linesList
-            for points in lines:
-                x1,y1,x2,y2=points[0]
-                linesList.append([x1,y1,x2,y2])
+            cv2.putText(image, text2, (text2X, 40), font, 1, (255, 255, 255), 2)
 
-            # Filter lines
-            linesList = self.filterLines(linesList, 600, 0.1, 0, width, height, False)
-            linesList = self.filterLines(linesList, 600, 0.1, 0, width, height, True)
-
-            move = self.isCenter(self.intersection, height, width, 100)
-            if move != 0:
-                print("Please move the corner to the center of the image")
-            else:
-                print("Center found")
-
-            # Plot lines and intersection
-            for line in linesList:
-                # print(line)
-                cv2.line(image,(line[0],line[1]),(line[2],line[3]),(255,255,255),2)
+        # Plot lines and intersection
+        for line in linesList:
+            # print(line)
+            cv2.line(image,(line[0],line[1]),(line[2],line[3]),(255,255,255),2)
+        
+        if len(self.intersection) != 0:
             cv2.circle(image, (int(self.intersection[0]), int(self.intersection[1])), 10, (0, 0, 255), -1)
 
         return image
+
+    def detectVideo(self, videoPath, ksize, t1, t2, height, width):
+
+        # Used for FPS
+        startTime = 0
+
+        # Open video file
+        cap = cv2.VideoCapture(videoPath)
+        if (cap.isOpened() == False):
+            print("Error opening file...")
+            return
+
+        # Show Video
+        while cap.isOpened():
+            (sucess, image) = cap.read()
+            if sucess:
+                empty = np.zeros(shape=(height, width, 3))
+
+                currentTime = time.time()
+                fps = 1 / (currentTime - startTime)
+                startTime = currentTime
+
+                cv2.putText(image, "FPS: " + str(int(fps)), (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+                lines = self.preprocessing(image, ksize, t1, t2)
+                if lines is None:
+                    print("{}\t\tNo lines detected".format(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(currentTime))))
+                    cv2.imshow("result", image)
+                else:
+                    print("{}\t\tLines detected".format(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(currentTime))))
+                    image = self.showLines(lines, height, width, image)
+                    cv2.imshow("result", image)
+
+                if cv2.waitKey(25) & 0xFF == ord('q'):
+                    break
+            
+            else:
+                break
+
+        cv2.destroyAllWindows()
+
+    def detectImage(self, lines, height, width):
+        empty = np.zeros(shape=(height, width, 3))
+
+        if lines is None:
+            print("No lines detected")
+            return
+        return self.showLines(lines, height, width, empty)
 
     def saveImage(self, image, name, save):
         cv2.imshow(name, image)
